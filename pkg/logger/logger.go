@@ -6,18 +6,25 @@ import (
 	"time"
 
 	"github.com/brianvoe/gofakeit/v6"
+	"github.com/rjonczy/log-genie/pkg/telemetry"
 	"github.com/sirupsen/logrus"
 )
 
 // Logger is a wrapper around logrus.Logger
 type Logger struct {
 	*logrus.Logger
+	telemetryEnabled bool
+	telemetry        *telemetry.Provider
+	localLogEnabled  bool
 }
 
 // Config holds the configuration for the logger
 type Config struct {
-	Verbosity string
-	Rate      int
+	Verbosity         string
+	Rate              int
+	TelemetryEnabled  bool
+	TelemetryEndpoint string
+	LocalLogEnabled   bool
 }
 
 // LogLevel represents the level of logging
@@ -35,7 +42,7 @@ const (
 )
 
 // New creates a new logger with the given configuration
-func New(config Config) *Logger {
+func New(config Config) (*Logger, error) {
 	logger := logrus.New()
 	logger.SetOutput(os.Stdout)
 	logger.SetFormatter(&logrus.JSONFormatter{
@@ -56,8 +63,35 @@ func New(config Config) *Logger {
 		logger.SetLevel(logrus.InfoLevel)
 	}
 
-	return &Logger{
-		Logger: logger,
+	l := &Logger{
+		Logger:           logger,
+		telemetryEnabled: config.TelemetryEnabled,
+		localLogEnabled:  config.LocalLogEnabled || !config.TelemetryEnabled, // If telemetry is disabled, local logs are always enabled
+	}
+
+	// Initialize telemetry provider if enabled
+	if config.TelemetryEnabled {
+		telemetryProvider, err := telemetry.New(telemetry.Config{
+			Enabled:  true,
+			Endpoint: config.TelemetryEndpoint,
+		})
+		if err != nil {
+			logger.WithError(err).Error("Failed to initialize telemetry provider, falling back to local logging")
+			l.telemetryEnabled = false
+			l.localLogEnabled = true
+			return l, err
+		}
+		l.telemetry = telemetryProvider
+		logger.Info("Telemetry provider initialized successfully")
+	}
+
+	return l, nil
+}
+
+// Shutdown gracefully shuts down the logger and its telemetry provider
+func (l *Logger) Shutdown() {
+	if l.telemetry != nil {
+		l.telemetry.Shutdown()
 	}
 }
 
@@ -76,8 +110,8 @@ func (l *Logger) GenerateRandomLog() {
 	latency := gofakeit.Number(1, 500)
 	ipAddress := gofakeit.IPv4Address()
 
-	// Create log entry with random fields
-	logEntry := l.WithFields(logrus.Fields{
+	// Create log fields map
+	fields := map[string]interface{}{
 		"service":     service,
 		"user_id":     userID,
 		"http_method": httpMethod,
@@ -85,18 +119,45 @@ func (l *Logger) GenerateRandomLog() {
 		"latency_ms":  latency,
 		"ip_address":  ipAddress,
 		"timestamp":   time.Now().UnixNano(),
-	})
+	}
 
-	// Log at the random level
-	switch level {
-	case Debug:
-		logEntry.Debug(message)
-	case Info:
-		logEntry.Info(message)
-	case Warn:
-		logEntry.Warn(message)
-	case Error:
-		logEntry.Error(message)
+	// Send to telemetry if enabled
+	if l.telemetryEnabled && l.telemetry != nil {
+		var telemetryLevel telemetry.LogLevel
+		switch level {
+		case Debug:
+			telemetryLevel = telemetry.DebugLevel
+		case Info:
+			telemetryLevel = telemetry.InfoLevel
+		case Warn:
+			telemetryLevel = telemetry.WarnLevel
+		case Error:
+			telemetryLevel = telemetry.ErrorLevel
+		}
+
+		err := l.telemetry.SendLog(telemetryLevel, message, fields)
+		if err != nil {
+			// If telemetry fails, log the error locally
+			l.WithError(err).Error("Failed to send log to telemetry endpoint")
+		}
+	}
+
+	// Log locally if enabled or if telemetry is not enabled
+	if l.localLogEnabled {
+		// Create log entry with random fields
+		logEntry := l.WithFields(logrus.Fields(fields))
+
+		// Log at the random level
+		switch level {
+		case Debug:
+			logEntry.Debug(message)
+		case Info:
+			logEntry.Info(message)
+		case Warn:
+			logEntry.Warn(message)
+		case Error:
+			logEntry.Error(message)
+		}
 	}
 }
 
@@ -109,14 +170,28 @@ func (l *Logger) GenerateRandomErrorLog() {
 	errorCode := gofakeit.Number(400, 599)
 	stackTrace := gofakeit.LoremIpsumSentence(5)
 
-	// Create log entry with random fields
-	logEntry := l.WithFields(logrus.Fields{
+	// Create fields map
+	fields := map[string]interface{}{
 		"service":     service,
 		"request_id":  requestID,
 		"error_code":  errorCode,
 		"stack_trace": stackTrace,
 		"timestamp":   time.Now().UnixNano(),
-	})
+	}
 
-	logEntry.Error(errorMessage)
+	// Send to telemetry if enabled
+	if l.telemetryEnabled && l.telemetry != nil {
+		err := l.telemetry.SendLog(telemetry.ErrorLevel, errorMessage, fields)
+		if err != nil {
+			// If telemetry fails, log the error locally
+			l.WithError(err).Error("Failed to send error log to telemetry endpoint")
+		}
+	}
+
+	// Log locally if enabled or if telemetry is not enabled
+	if l.localLogEnabled {
+		// Create log entry with random fields
+		logEntry := l.WithFields(logrus.Fields(fields))
+		logEntry.Error(errorMessage)
+	}
 }

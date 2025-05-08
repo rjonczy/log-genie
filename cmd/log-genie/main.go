@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	defaultRate      = 10
-	defaultVerbosity = "info"
+	defaultRate              = 10
+	defaultVerbosity         = "info"
+	defaultTelemetryEndpoint = "collector:4318"
 )
 
 // Main is the entry point for the application
@@ -22,6 +24,9 @@ func Main() {
 	// Parse command line flags
 	rate := flag.Int("rate", defaultRate, "Number of logs per second")
 	verbosity := flag.String("verbosity", defaultVerbosity, "Log verbosity level: debug, info, warn, error")
+	telemetryEnabled := flag.Bool("telemetry", false, "Enable OpenTelemetry logs export")
+	telemetryEndpoint := flag.String("telemetry-endpoint", defaultTelemetryEndpoint, "OpenTelemetry collector endpoint")
+	localLogs := flag.Bool("local-logs", true, "Enable local logs to stdout/stderr even when telemetry is enabled")
 	flag.Parse()
 
 	// Check environment variables (override command line flags if present)
@@ -35,12 +40,33 @@ func Main() {
 		*verbosity = envVerbosity
 	}
 
+	if envTelemetry := os.Getenv("LOG_GENIE_TELEMETRY"); envTelemetry != "" {
+		*telemetryEnabled = strings.ToLower(envTelemetry) == "true" || envTelemetry == "1"
+	}
+
+	if envTelemetryEndpoint := os.Getenv("LOG_GENIE_TELEMETRY_ENDPOINT"); envTelemetryEndpoint != "" {
+		*telemetryEndpoint = envTelemetryEndpoint
+	}
+
+	if envLocalLogs := os.Getenv("LOG_GENIE_LOCAL_LOGS"); envLocalLogs != "" {
+		*localLogs = strings.ToLower(envLocalLogs) == "true" || envLocalLogs == "1"
+	}
+
 	// Create logger
 	config := logger.Config{
-		Verbosity: *verbosity,
-		Rate:      *rate,
+		Verbosity:         *verbosity,
+		Rate:              *rate,
+		TelemetryEnabled:  *telemetryEnabled,
+		TelemetryEndpoint: *telemetryEndpoint,
+		LocalLogEnabled:   *localLogs,
 	}
-	log := logger.New(config)
+
+	log, err := logger.New(config)
+	if err != nil {
+		fmt.Printf("Error initializing logger: %v\n", err)
+		// Continue with local logging
+	}
+	defer log.Shutdown()
 
 	// Calculate the interval between log emissions
 	interval := time.Second / time.Duration(*rate)
@@ -54,8 +80,18 @@ func Main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	// Log startup message
+	telemetryStatus := "disabled"
+	if *telemetryEnabled {
+		telemetryStatus = "enabled, endpoint: " + *telemetryEndpoint
+	}
+	localLogsStatus := "enabled"
+	if !*localLogs {
+		localLogsStatus = "disabled"
+	}
+
 	startupLog := log.WithField("app", "log-genie")
-	startupLog.Info(fmt.Sprintf("Starting log generation at %d logs per second with %s verbosity", *rate, *verbosity))
+	startupLog.Info(fmt.Sprintf("Starting log generation at %d logs per second with %s verbosity. OpenTelemetry: %s. Local logs: %s",
+		*rate, *verbosity, telemetryStatus, localLogsStatus))
 
 	// Run the log generator
 	go func() {
