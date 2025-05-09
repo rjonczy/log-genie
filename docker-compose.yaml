@@ -1,0 +1,24 @@
+version: '3'
+
+services:
+  # Log Genie application
+  log-genie:
+    build:
+      context: .
+    environment:
+      - LOG_GENIE_VERBOSITY=debug
+      - LOG_GENIE_RATE=10
+      - LOG_GENIE_TELEMETRY=true
+      - LOG_GENIE_TELEMETRY_ENDPOINT=http://otel-collector:4318/v1/logs
+      - LOG_GENIE_LOCAL_LOGS=true
+    depends_on:
+      - otel-collector
+
+  # OpenTelemetry collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4318:4318"  # OTLP HTTP receiver 
