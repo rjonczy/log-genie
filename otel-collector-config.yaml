@@ -10,8 +10,8 @@ processors:
     send_batch_size: 1024
 
 exporters:
-  logging:
-    loglevel: debug
+  debug:
+    verbosity: detailed
   # Add other exporters like elasticsearch, prometheus, etc.
 
 service:
@@ -19,4 +19,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [logging] 
+      exporters: [debug] 
