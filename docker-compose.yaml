@@ -8,15 +8,19 @@ services:
       - LOG_GENIE_RATE=1
       - LOG_GENIE_TELEMETRY=true
       - LOG_GENIE_TELEMETRY_ENDPOINT=otel-collector:4318
-      - LOG_GENIE_LOCAL_LOGS=true
+      - LOG_GENIE_LOCAL_LOGS=false
+      - LOG_GENIE_SHOW_RESPONSES=true
+      - LOG_GENIE_APPLICATION_ID=log-genie-docker
     depends_on:
       - otel-collector
 
   # OpenTelemetry collector
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
-    command: ["--config=/etc/otel-collector-config.yaml"]
+    command: ["--config=/etc/collector-config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./collector-config.yaml:/etc/collector-config.yaml
     ports:
-      - "4318:4318"  # OTLP HTTP receiver 
+      - "4317:4317"  # OTLP gRPC receiver
+      - "4318:4318"  # OTLP HTTP receiver
+      - "13133:13133"  # Health check extension 

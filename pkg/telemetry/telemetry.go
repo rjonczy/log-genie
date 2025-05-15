@@ -10,9 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
 // Provider is a wrapper for OpenTelemetry log provider
@@ -29,14 +32,16 @@ type Provider struct {
 	mutex         sync.Mutex
 	lastReport    time.Time
 	httpClient    *http.Client
-	showResponses bool // Flag to control response display
+	showResponses bool   // Flag to control response display
+	applicationID string // Application ID for resource attributes
 }
 
 // Config holds the configuration for the telemetry provider
 type Config struct {
 	Enabled       bool
 	Endpoint      string
-	ShowResponses bool // New configuration field to control response display
+	ShowResponses bool   // Control response display
+	ApplicationID string // Application ID for OTEL resource attributes
 }
 
 // LogLevel represents the level of logging
@@ -89,6 +94,7 @@ func New(config Config) (*Provider, error) {
 		lastReport:    time.Time{}, // Initialize to zero time to trigger immediate status messages
 		httpClient:    &http.Client{Timeout: 5 * time.Second},
 		showResponses: config.ShowResponses,
+		applicationID: config.ApplicationID,
 	}
 
 	if !p.enabled {
@@ -104,9 +110,21 @@ func New(config Config) (*Provider, error) {
 		fmt.Printf("  - Endpoint: %s\n", p.endpoint)
 		fmt.Printf("  - Host:Port: %s\n", p.hostPort)
 		fmt.Printf("  - Path: %s\n", p.path)
+		fmt.Printf("  - Application ID: %s\n", p.applicationID)
 
 		// Test direct POST to the collector
 		go p.testDirectPost()
+	}
+
+	// Create resource with service.name and application_id attributes
+	resource, err := sdkresource.New(context.Background(),
+		sdkresource.WithAttributes(
+			semconv.ServiceName("log-genie"),
+			attribute.String("application_id", p.applicationID),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
 	// Configure OTLP HTTP exporter
@@ -145,9 +163,10 @@ func New(config Config) (*Provider, error) {
 		sdklog.WithExportMaxBatchSize(10),
 	)
 
-	// Create log provider with BatchProcessor
+	// Create log provider with BatchProcessor and resource
 	p.logProvider = sdklog.NewLoggerProvider(
 		sdklog.WithProcessor(batchProcessor),
+		sdklog.WithResource(resource),
 	)
 
 	// Get a logger instance
@@ -197,17 +216,21 @@ func (p *Provider) testDirectPost() {
 	fmt.Printf("DEBUG: Testing direct POST to %s\n", logsUrl)
 
 	// Create a test log payload similar to what the OTLP exporter would send
-	testPayload := `{
+	// Include application_id in the resource attributes
+	testPayload := fmt.Sprintf(`{
 		"resourceLogs": [{
 			"resource": {
 				"attributes": [{
 					"key": "service.name",
 					"value": {"stringValue": "log-genie-test"}
+				}, {
+					"key": "application_id",
+					"value": {"stringValue": "%s"}
 				}]
 			},
 			"scopeLogs": [{
 				"logRecords": [{
-					"timeUnixNano": "1715777777000000000",
+					"timeUnixNano": "%d",
 					"severityNumber": 9,
 					"severityText": "INFO",
 					"body": {"stringValue": "Test log message"},
@@ -218,7 +241,7 @@ func (p *Provider) testDirectPost() {
 				}]
 			}]
 		}]
-	}`
+	}`, p.applicationID, time.Now().UnixNano())
 
 	// Remove whitespace to make it more compact
 	testPayload = strings.ReplaceAll(testPayload, "\t", "")

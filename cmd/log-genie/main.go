@@ -17,6 +17,7 @@ const (
 	defaultRate              = 10
 	defaultVerbosity         = "info"
 	defaultTelemetryEndpoint = "collector:4318"
+	defaultApplicationID     = "log-genie" // Default application ID
 )
 
 // Main is the entry point for the application
@@ -28,6 +29,7 @@ func Main() {
 	telemetryEndpoint := flag.String("telemetry-endpoint", defaultTelemetryEndpoint, "OpenTelemetry collector endpoint")
 	localLogs := flag.Bool("local-logs", false, "Enable local logs to stdout/stderr even when telemetry is enabled")
 	showResponses := flag.Bool("show-responses", false, "Show responses from the OTEL collector")
+	applicationID := flag.String("application-id", defaultApplicationID, "Application ID for OTEL resource attributes")
 	flag.Parse()
 
 	// Check environment variables (override command line flags if present)
@@ -57,6 +59,10 @@ func Main() {
 		*showResponses = strings.ToLower(envShowResponses) == "true" || envShowResponses == "1"
 	}
 
+	if envApplicationID := os.Getenv("LOG_GENIE_APPLICATION_ID"); envApplicationID != "" {
+		*applicationID = envApplicationID
+	}
+
 	// Create logger
 	config := logger.Config{
 		Verbosity:         *verbosity,
@@ -65,6 +71,7 @@ func Main() {
 		TelemetryEndpoint: *telemetryEndpoint,
 		LocalLogEnabled:   *localLogs,
 		ShowResponses:     *showResponses,
+		ApplicationID:     *applicationID,
 	}
 
 	log, err := logger.New(config)
@@ -100,8 +107,8 @@ func Main() {
 	}
 
 	startupLog := log.WithField("app", "log-genie")
-	startupLog.Info(fmt.Sprintf("Starting log generation at %d logs per second with %s verbosity. OpenTelemetry: %s. Local logs: %s. Show responses: %s",
-		*rate, *verbosity, telemetryStatus, localLogsStatus, showResponsesStatus))
+	startupLog.Info(fmt.Sprintf("Starting log generation at %d logs per second with %s verbosity. OpenTelemetry: %s. Local logs: %s. Show responses: %s. Application ID: %s",
+		*rate, *verbosity, telemetryStatus, localLogsStatus, showResponsesStatus, *applicationID))
 
 	// Run the log generator
 	go func() {

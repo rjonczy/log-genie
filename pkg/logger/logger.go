@@ -26,6 +26,7 @@ type Config struct {
 	TelemetryEndpoint string
 	LocalLogEnabled   bool
 	ShowResponses     bool
+	ApplicationID     string // Application ID for OTEL resource attributes
 }
 
 // LogLevel represents the level of logging
@@ -76,6 +77,7 @@ func New(config Config) (*Logger, error) {
 			Enabled:       true,
 			Endpoint:      config.TelemetryEndpoint,
 			ShowResponses: config.ShowResponses,
+			ApplicationID: config.ApplicationID,
 		})
 		if err != nil {
 			logger.WithError(err).Error("Failed to initialize telemetry provider, falling back to local logging")

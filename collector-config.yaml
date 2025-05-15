@@ -1,0 +1,49 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 1000
+    timeout: 10s
+
+  # Test processor to filter out logs without application_id
+  filter/drop_no_app_id:
+    error_mode: ignore
+    logs:
+      log_record:
+      - |
+        resource.attributes["application_id"] == nil and
+        resource.attributes["application_ID"] == nil
+
+exporters:
+  debug:
+    verbosity: detailed
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  
+  telemetry:
+    logs:
+      level: "debug"
+
+  pipelines:
+    # Regular pipeline for all logs
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    
+    # Pipeline that requires application_id
+    logs/require_app_id:
+      receivers: [otlp]
+      processors: [filter/drop_no_app_id, batch]
+      exporters: [debug] 
