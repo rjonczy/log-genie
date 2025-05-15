@@ -91,7 +91,7 @@ func New(config Config) (*Provider, error) {
 		endpoint:      config.Endpoint,
 		hostPort:      hostPort,
 		path:          path,
-		lastReport:    time.Time{}, // Initialize to zero time to trigger immediate status messages
+		lastReport:    time.Now(), // Initialize to current time instead of zero time
 		httpClient:    &http.Client{Timeout: 5 * time.Second},
 		showResponses: config.ShowResponses,
 		applicationID: config.ApplicationID,
@@ -284,6 +284,14 @@ func (p *Provider) reportLogsSent() {
 		case <-ticker.C:
 			count := p.logCount.Load()
 			now := time.Now()
+
+			// Check if lastReport is zero time or unreasonably old (>10 minutes ago)
+			if p.lastReport.IsZero() || now.Sub(p.lastReport) > 10*time.Minute {
+				p.lastReport = now
+				p.logCount.Store(0)
+				continue
+			}
+
 			elapsed := now.Sub(p.lastReport).Seconds()
 			if elapsed > 0 {
 				rate := float64(count) / elapsed
