@@ -25,6 +25,7 @@ type Config struct {
 	TelemetryEnabled  bool
 	TelemetryEndpoint string
 	LocalLogEnabled   bool
+	ShowResponses     bool
 }
 
 // LogLevel represents the level of logging
@@ -72,8 +73,9 @@ func New(config Config) (*Logger, error) {
 	// Initialize telemetry provider if enabled
 	if config.TelemetryEnabled {
 		telemetryProvider, err := telemetry.New(telemetry.Config{
-			Enabled:  true,
-			Endpoint: config.TelemetryEndpoint,
+			Enabled:       true,
+			Endpoint:      config.TelemetryEndpoint,
+			ShowResponses: config.ShowResponses,
 		})
 		if err != nil {
 			logger.WithError(err).Error("Failed to initialize telemetry provider, falling back to local logging")
@@ -194,4 +196,9 @@ func (l *Logger) GenerateRandomErrorLog() {
 		logEntry := l.WithFields(logrus.Fields(fields))
 		logEntry.Error(errorMessage)
 	}
+}
+
+// WithField creates a new entry with the specified field
+func (l *Logger) WithField(key string, value interface{}) *logrus.Entry {
+	return l.Logger.WithField(key, value)
 }

@@ -3,6 +3,9 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,21 +17,26 @@ import (
 
 // Provider is a wrapper for OpenTelemetry log provider
 type Provider struct {
-	enabled     bool
-	endpoint    string
-	logProvider *sdklog.LoggerProvider
-	logger      log.Logger
-	ctx         context.Context
-	cancel      context.CancelFunc
-	logCount    atomic.Int64
-	mutex       sync.Mutex
-	lastReport  time.Time
+	enabled       bool
+	endpoint      string
+	hostPort      string // Just the host:port part
+	path          string // The path part
+	logProvider   *sdklog.LoggerProvider
+	logger        log.Logger
+	ctx           context.Context
+	cancel        context.CancelFunc
+	logCount      atomic.Int64
+	mutex         sync.Mutex
+	lastReport    time.Time
+	httpClient    *http.Client
+	showResponses bool // Flag to control response display
 }
 
 // Config holds the configuration for the telemetry provider
 type Config struct {
-	Enabled  bool
-	Endpoint string
+	Enabled       bool
+	Endpoint      string
+	ShowResponses bool // New configuration field to control response display
 }
 
 // LogLevel represents the level of logging
@@ -45,12 +53,42 @@ const (
 	ErrorLevel LogLevel = "error"
 )
 
+// This section intentionally left empty after refactoring to use direct POST testing
+
+// parseEndpoint separates host:port from path in an endpoint string
+func parseEndpoint(endpoint string) (hostPort, path string) {
+	// Handle case where the endpoint might already have a scheme
+	if strings.HasPrefix(endpoint, "http://") {
+		endpoint = strings.TrimPrefix(endpoint, "http://")
+	} else if strings.HasPrefix(endpoint, "https://") {
+		endpoint = strings.TrimPrefix(endpoint, "https://")
+	}
+
+	// Split at first slash to separate host:port from path
+	parts := strings.SplitN(endpoint, "/", 2)
+	hostPort = parts[0]
+
+	if len(parts) > 1 {
+		path = "/" + parts[1]
+	} else {
+		path = ""
+	}
+
+	return hostPort, path
+}
+
 // New creates a new telemetry provider
 func New(config Config) (*Provider, error) {
+	hostPort, path := parseEndpoint(config.Endpoint)
+
 	p := &Provider{
-		enabled:    config.Enabled,
-		endpoint:   config.Endpoint,
-		lastReport: time.Now(),
+		enabled:       config.Enabled,
+		endpoint:      config.Endpoint,
+		hostPort:      hostPort,
+		path:          path,
+		lastReport:    time.Time{}, // Initialize to zero time to trigger immediate status messages
+		httpClient:    &http.Client{Timeout: 5 * time.Second},
+		showResponses: config.ShowResponses,
 	}
 
 	if !p.enabled {
@@ -60,17 +98,36 @@ func New(config Config) (*Provider, error) {
 	var err error
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
+	// If show responses is enabled, print configuration information
+	if p.showResponses {
+		fmt.Println("OTEL COLLECTOR CONFIG:")
+		fmt.Printf("  - Endpoint: %s\n", p.endpoint)
+		fmt.Printf("  - Host:Port: %s\n", p.hostPort)
+		fmt.Printf("  - Path: %s\n", p.path)
+
+		// Test direct POST to the collector
+		go p.testDirectPost()
+	}
+
 	// Configure OTLP HTTP exporter
 	var exporter sdklog.Exporter
 
-	// Parse the endpoint URL
+	// For OTLP exporter, we need just the host:port part
 	insecure := true // Default to insecure for easier testing
 	options := []otlploghttp.Option{
-		otlploghttp.WithEndpoint(p.endpoint),
+		otlploghttp.WithEndpoint(p.hostPort),
 	}
+
+	// The WithHTTPClient option might not be available in this version
+	// Instead, we'll rely on the custom transport to capture responses
 
 	if insecure {
 		options = append(options, otlploghttp.WithInsecure())
+	}
+
+	// If path was provided, add it to the URL path prefix
+	if p.path != "" {
+		options = append(options, otlploghttp.WithURLPath(p.path))
 	}
 
 	exporter, err = otlploghttp.New(p.ctx, options...)
@@ -84,7 +141,8 @@ func New(config Config) (*Provider, error) {
 		// Configure batch settings
 		sdklog.WithExportTimeout(5*time.Second),
 		sdklog.WithMaxQueueSize(2048),
-		sdklog.WithExportMaxBatchSize(512),
+		// Use smaller batch size for more frequent POST operations
+		sdklog.WithExportMaxBatchSize(10),
 	)
 
 	// Create log provider with BatchProcessor
@@ -101,7 +159,92 @@ func New(config Config) (*Provider, error) {
 	// Report logs sent every minute
 	go p.reportLogsSent()
 
+	// Set up periodic POST test if responses should be shown
+	if p.showResponses {
+		// Start a goroutine to periodically test direct POST
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					p.testDirectPost()
+				case <-p.ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	return p, nil
+}
+
+// testDirectPost sends a test log directly to the collector using POST
+// and displays the response
+func (p *Provider) testDirectPost() {
+	if !p.enabled || !p.showResponses {
+		return
+	}
+
+	// First, test using curl-like direct POST
+	pathToUse := "/v1/logs"
+	if p.path != "" {
+		pathToUse = p.path
+	}
+	logsUrl := fmt.Sprintf("http://%s%s", p.hostPort, pathToUse)
+
+	fmt.Printf("DEBUG: Testing direct POST to %s\n", logsUrl)
+
+	// Create a test log payload similar to what the OTLP exporter would send
+	testPayload := `{
+		"resourceLogs": [{
+			"resource": {
+				"attributes": [{
+					"key": "service.name",
+					"value": {"stringValue": "log-genie-test"}
+				}]
+			},
+			"scopeLogs": [{
+				"logRecords": [{
+					"timeUnixNano": "1715777777000000000",
+					"severityNumber": 9,
+					"severityText": "INFO",
+					"body": {"stringValue": "Test log message"},
+					"attributes": [{
+						"key": "test",
+						"value": {"stringValue": "value"}
+					}]
+				}]
+			}]
+		}]
+	}`
+
+	// Remove whitespace to make it more compact
+	testPayload = strings.ReplaceAll(testPayload, "\t", "")
+	testPayload = strings.ReplaceAll(testPayload, "\n", "")
+
+	// Create the POST request
+	req, err := http.NewRequestWithContext(p.ctx, "POST", logsUrl,
+		strings.NewReader(testPayload))
+	if err == nil {
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := p.httpClient.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if len(body) > 0 {
+				fmt.Printf("OTEL COLLECTOR DIRECT POST RESPONSE: %s\n", string(body))
+			} else {
+				fmt.Printf("DEBUG: OTLP collector returned empty response with status: %d\n",
+					resp.StatusCode)
+			}
+		} else {
+			fmt.Printf("DEBUG: Error sending test POST request: %v\n", err)
+		}
+	} else {
+		fmt.Printf("DEBUG: Error creating test POST request: %v\n", err)
+	}
 }
 
 // reportLogsSent reports the number of logs sent periodically

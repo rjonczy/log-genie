@@ -26,7 +26,8 @@ func Main() {
 	verbosity := flag.String("verbosity", defaultVerbosity, "Log verbosity level: debug, info, warn, error")
 	telemetryEnabled := flag.Bool("telemetry", false, "Enable OpenTelemetry logs export")
 	telemetryEndpoint := flag.String("telemetry-endpoint", defaultTelemetryEndpoint, "OpenTelemetry collector endpoint")
-	localLogs := flag.Bool("local-logs", true, "Enable local logs to stdout/stderr even when telemetry is enabled")
+	localLogs := flag.Bool("local-logs", false, "Enable local logs to stdout/stderr even when telemetry is enabled")
+	showResponses := flag.Bool("show-responses", false, "Show responses from the OTEL collector")
 	flag.Parse()
 
 	// Check environment variables (override command line flags if present)
@@ -52,6 +53,10 @@ func Main() {
 		*localLogs = strings.ToLower(envLocalLogs) == "true" || envLocalLogs == "1"
 	}
 
+	if envShowResponses := os.Getenv("LOG_GENIE_SHOW_RESPONSES"); envShowResponses != "" {
+		*showResponses = strings.ToLower(envShowResponses) == "true" || envShowResponses == "1"
+	}
+
 	// Create logger
 	config := logger.Config{
 		Verbosity:         *verbosity,
@@ -59,6 +64,7 @@ func Main() {
 		TelemetryEnabled:  *telemetryEnabled,
 		TelemetryEndpoint: *telemetryEndpoint,
 		LocalLogEnabled:   *localLogs,
+		ShowResponses:     *showResponses,
 	}
 
 	log, err := logger.New(config)
@@ -88,10 +94,14 @@ func Main() {
 	if !*localLogs {
 		localLogsStatus = "disabled"
 	}
+	showResponsesStatus := "disabled"
+	if *showResponses {
+		showResponsesStatus = "enabled"
+	}
 
 	startupLog := log.WithField("app", "log-genie")
-	startupLog.Info(fmt.Sprintf("Starting log generation at %d logs per second with %s verbosity. OpenTelemetry: %s. Local logs: %s",
-		*rate, *verbosity, telemetryStatus, localLogsStatus))
+	startupLog.Info(fmt.Sprintf("Starting log generation at %d logs per second with %s verbosity. OpenTelemetry: %s. Local logs: %s. Show responses: %s",
+		*rate, *verbosity, telemetryStatus, localLogsStatus, showResponsesStatus))
 
 	// Run the log generator
 	go func() {
